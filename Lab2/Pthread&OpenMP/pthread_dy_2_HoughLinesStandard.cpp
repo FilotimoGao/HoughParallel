@@ -106,7 +106,7 @@ void* step2(void* arg)
             if (accum[base] > threshold_ &&
                 accum[base] > accum[base - 1] && accum[base] >= accum[base + 1] &&
                 accum[base] > accum[base - numrho - 2] && accum[base] >= accum[base + numrho + 2])
-                (bufs[*t_id]).push_back(base);
+                bufs[*t_id].push_back(base);
         }
     pthread_exit(NULL);
 }
