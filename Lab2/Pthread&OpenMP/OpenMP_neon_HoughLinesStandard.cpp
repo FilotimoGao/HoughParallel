@@ -6,7 +6,7 @@
 #include <chrono>
 #include <climits>
 #include <omp.h>
-#include <pthread.h>
+#include <arm_neon.h>
 #define pai 3.14159265358979323846
 #define ThreadNum 5
 
@@ -104,11 +104,25 @@ HoughLinesStandard(const Array &src, vector<Line> &lines, int type,
                 if (image[i * step + j] != 0)
                 {
                     #pragma omp task
-                    for (int n = 0; n < numangle; n++)
+                    for (int n = 0; n < numangle; n+=4)
                     {
-                        int r = (int)(j * tabCos[n] + i * tabSin[n] + 0.5);
-                        r += (numrho - 1) / 2;
-                        accum[(n + 1) * (numrho + 2) + r + 1]++;
+                        //加载数组tabCos和tabSin的第n个元素及后续3个元素的值到向量中
+                        float32x4_t tabCos4 = vld1q_f32(&tabCos[n]);
+                        float32x4_t tabSin4 = vld1q_f32(&tabSin[n]);
+
+                        //获取i和j的向量
+                        float32x4_t j4 = vmovq_n_f32(j);
+                        float32x4_t i4 = vmovq_n_f32(i);
+
+                        //vcvtq_s32_f32将上一步得到的向量转换为int32x4_t类型的向量,四舍五入到最接近的整数
+                        int32x4_t r4 = vcvtq_s32_f32(vaddq_f32(vmulq_f32(j4, tabCos4), vmulq_f32(i4, tabSin4)));
+                        r4 = vaddq_s32(r4, vdupq_n_s32((numrho - 1) / 2));
+
+                        //给四个数组元素分别自增一
+                        accum[(n + 1) * (numrho + 2) + (int)r4[0] +1] ++;
+                        accum[(n + 2) * (numrho + 2) + (int)r4[1] +1] ++;
+                        accum[(n + 3) * (numrho + 2) + (int)r4[2] +1] ++;
+                        accum[(n + 4) * (numrho + 2) + (int)r4[3] +1] ++;
                     }
                 }
             }
@@ -126,9 +140,9 @@ HoughLinesStandard(const Array &src, vector<Line> &lines, int type,
     #pragma omp parallel
     {
         #pragma omp for
-        for (int r = 0; r < numrho; r++)
+        for (int n = 0; n < numangle; n++)
         {
-            for (int n = 0; n < numangle; n++)
+            for (int r = 0; r < numrho; r++)
             {
                 int base = (n + 1) * (numrho + 2) + r + 1;
                 if (accum[base] > threshold &&
