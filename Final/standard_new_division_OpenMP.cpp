@@ -7,7 +7,9 @@
 #include <climits>
 #include <random>
 #include <time.h>
+#include <omp.h>
 #define pai 3.14159265358979323846
+#define ThreadNum 4
 
 using namespace std;
 
@@ -68,11 +70,14 @@ struct hough_cmp_gt
 };
 
 void
-HoughLinesStandard(const Array &src, vector<Line_ra> &lines, int type,
+HoughLinesStandard(const Array& src, vector<Line_ra>& lines, int type,
     float rho, float theta,
-    int threshold, int &linesMax,
+    int threshold, int& linesMax,
     double min_theta, double max_theta)
 {
+    // 设置线程数
+    omp_set_num_threads(ThreadNum);
+
     //基础参数预处理
     int* image = src.array;
     float irho = 1 / rho;
@@ -100,40 +105,68 @@ HoughLinesStandard(const Array &src, vector<Line_ra> &lines, int type,
     float* tabCos = new float[numangle];
 
     float ang = static_cast<float>(min_theta);
+   
+    int i, j;
+    std::vector<int> sort_buf;
+    vector<Point> nzloc;
+    Point pt(0, 0);
+
+    //正式步骤一：填充累加器
+    auto start = std::chrono::high_resolution_clock::now();
+
     for (int n = 0; n < numangle; ang += (float)theta, n++)
     {
         tabSin[n] = (float)(sin((double)ang) * irho);
         tabCos[n] = (float)(cos((double)ang) * irho);
     }
 
-    int i, j;
-    std::vector<int> sort_buf;
-
-    //正式步骤一：填充累加器
-    auto start = std::chrono::high_resolution_clock::now();
-    for (i = 0; i < height; i++)
-        for (j = 0; j < width; j++)
+    for (pt.y = 0; pt.y < height; pt.y++)
+    {
+        const int* data = &image[pt.y * step];
+        for (pt.x = 0; pt.x < width; pt.x++)
         {
-            if (image[i * step + j] != 0)
-                for (int n = 0; n < numangle; n++)
-                {
-                    int r = (int)(j * tabCos[n] + i * tabSin[n] + 0.5);
-                    r += (numrho - 1) / 2;
-                    accum[(n + 1) * (numrho + 2) + r + 1]++;
-                }
+            if (data[pt.x])
+                nzloc.push_back(pt);
         }
+    }
     auto end = std::chrono::high_resolution_clock::now();
     // 计算时间差
     chrono::duration<double> duration = end - start;
-    cout << "step1: " << duration.count() * 1000 << "ms" << endl;
+    cout << "step1_1: " << duration.count() * 1000 << "ms" << endl;
+
+
+    //拆分步骤一
+    start = std::chrono::high_resolution_clock::now();
+    #pragma omp parallel
+    {
+        int size = (int)nzloc.size();
+        #pragma omp for
+        for (int i = 0; i < size; i++)
+        {
+            int* adata = accum;
+            adata += (numrho + 2);
+            for (int n = 0; n < numangle; n++, adata += (numrho + 2))
+            {
+                int r = (int)(nzloc[i].x * tabCos[n] + nzloc[i].y * tabSin[n] + 0.5);
+                r += (numrho - 1) / 2;
+                adata[r + 1]++;
+            }
+        }
+    }
+    
+    end = std::chrono::high_resolution_clock::now();
+    duration = end - start;
+    cout << "step1_2: " << duration.count() * 1000 << "ms" << endl;
+
 
     //正式步骤二：寻找所有本地个最大值
     start = std::chrono::high_resolution_clock::now();
-    for (int r = 0; r < numrho; r++)
-        for (int n = 0; n < numangle; n++)
+    
+    for (int n = 0; n < numangle; n++)
+        for (int r = 0; r < numrho; r++)
         {
             int base = (n + 1) * (numrho + 2) + r + 1;
-        
+
             if (accum[base] > threshold &&
                 accum[base] > accum[base - 1] && accum[base] >= accum[base + 1] &&
                 accum[base] > accum[base - numrho - 2] && accum[base] >= accum[base + numrho + 2])

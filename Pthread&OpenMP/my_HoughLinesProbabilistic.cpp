@@ -46,12 +46,31 @@ struct Line
     Line(int x1, int y1, int x2, int y2) :p1(x1, y1), p2(x2, y2) {}
 };
 
+//代表直线
+struct Line_ra
+{
+    float rho;
+    float angle;
+    Line_ra(){}
+    Line_ra(float r,float a):rho(r),angle(a){}
+};
+
+struct hough_cmp_gt
+{
+    hough_cmp_gt(const int* _aux) : aux(_aux) {}
+    inline bool operator()(int l1, int l2) const
+    {
+        return aux[l1] > aux[l2] || (aux[l1] == aux[l2] && l1 < l2);
+    }
+    const int* aux;
+};
+
 
 void
 HoughLinesProbabilistic(const Array& src,
     float rho, float theta, int threshold,
     int lineLength, int lineGap,
-    std::vector<Line>& lines, int& linesMax)
+    std::vector<Line_ra>& lines, int& linesMax)
 {
     Point pt(0, 0);
     float irho = 1 / rho;
@@ -102,7 +121,7 @@ HoughLinesProbabilistic(const Array& src,
     }
 
     int count = (int)nzloc.size();
-    cout << "count:" << count << endl;
+    //cout << "count:" << count << endl;
 
     // stage 2. process all the points in random order
     for (; count > 0; count--)
@@ -110,6 +129,7 @@ HoughLinesProbabilistic(const Array& src,
         // choose random point out of the remaining ones
         int idx = rand() % count;
         int max_val = threshold - 1, max_n = 0;
+        float max_r = 0;
         Point point = nzloc[idx];
         //cout << "point " << idx << ": (" << point.x << ", " << point.y << ")" << endl;
         Point line_end[2] = { {0,0},{0,0} };
@@ -118,7 +138,6 @@ HoughLinesProbabilistic(const Array& src,
         int* adata = accum;
 
         int i = point.y, j = point.x, k, x0, y0, dx0, dy0, xflag;
-        int good_line;
         const int shift = 16;
 
         // "remove" it by overriding it with the last element
@@ -140,6 +159,7 @@ HoughLinesProbabilistic(const Array& src,
             {
                 max_val = val;
                 max_n = n;
+                max_r = r;
             }
         }
 
@@ -147,12 +167,18 @@ HoughLinesProbabilistic(const Array& src,
         if (max_val < threshold)
             continue;
 
+        Line_ra line;
+        line.rho = (max_r - (numrho - 1) * 0.5f) * rho;
+        line.angle = max_n * theta;
+        lines.push_back(line);
+
         // from the current point walk in each direction
         // along the found line and extract the line segment
         a = -ttab[max_n * 2 + 1];
         b = ttab[max_n * 2];
         x0 = j;
         y0 = i;
+
         if (fabs(a) > fabs(b))
         {
             xflag = 1;
@@ -168,53 +194,6 @@ HoughLinesProbabilistic(const Array& src,
             x0 = (x0 << shift) + (1 << (shift - 1));
         }
 
-        for (k = 0; k < 2; k++)
-        {
-            int gap = 0, x = x0, y = y0, dx = dx0, dy = dy0;
-
-            if (k > 0)
-                dx = -dx, dy = -dy;
-
-            // walk along the line using fixed-point arithmetic,
-            // stop at the image border or in case of too big gap
-            for (;; x += dx, y += dy)
-            {
-                int* mdata;
-                int i1, j1;
-
-                if (xflag)
-                {
-                    j1 = x;
-                    i1 = y >> shift;
-                }
-                else
-                {
-                    j1 = x >> shift;
-                    i1 = y;
-                }
-
-                if (j1 < 0 || j1 >= width || i1 < 0 || i1 >= height)
-                    break;
-
-                mdata = mdata0 + i1 * width + j1;
-
-                // for each non-zero point:
-                //    update line end,
-                //    clear the mask element
-                //    reset the gap
-                if (*mdata)
-                {
-                    gap = 0;
-                    line_end[k].y = i1;
-                    line_end[k].x = j1;
-                }
-                else if (++gap > lineGap)
-                    break;
-            }
-        }
-
-        good_line = std::abs(line_end[1].x - line_end[0].x) >= lineLength ||
-            std::abs(line_end[1].y - line_end[0].y) >= lineLength;
 
         for (k = 0; k < 2; k++)
         {
@@ -242,90 +221,32 @@ HoughLinesProbabilistic(const Array& src,
                 }
 
                 mdata = mdata0 + i1 * width + j1;
+                //cout << "i1,j1" << i1 << " " << j1 << endl;
 
+                //如果到达了图像的边界，停止位移，退出循环  
+                if (j1 < 0 || j1 >= width || i1 < 0 || i1 >= height)
+                    break;
                 // for each non-zero point:
                 //    update line end,
                 //    clear the mask element
                 //    reset the gap
                 if (*mdata)
                 {
-                    if (good_line)
+                    adata = accum;
+                    for (int n = 0; n < numangle; n++, adata += numrho)
                     {
-                        adata = accum;
-                        for (int n = 0; n < numangle; n++, adata += numrho)
-                        {
-                            int r = (int)(j1 * ttab[n * 2] + i1 * ttab[n * 2 + 1] + 0.5);
-                            r += (numrho - 1) / 2;
-                            adata[r]--;
-                        }
+                        int r = (int)(j1 * ttab[n * 2] + i1 * ttab[n * 2 + 1] + 0.5);
+                        r += (numrho - 1) / 2;
+                        adata[r]--;
                     }
                     *mdata = 0;
                 }
 
-                if (i1 == line_end[k].y && j1 == line_end[k].x)
-                    break;
-            }
-        }
-
-        if (good_line)
-        {
-            //cout << "goodline!!!" << endl;
-            Line lr(line_end[0].x, line_end[0].y, line_end[1].x, line_end[1].y);
-            lines.push_back(lr);
-            if ((int)lines.size() >= linesMax)
-            {
-                delete[] accum;
-                delete[] mask;
-                delete[] trigtab;
-                return;
+                
             }
         }
     }
     delete[] accum;
     delete[] mask;
     delete[] trigtab;
-}
-
-
-int main()
-{
-    ifstream file("edges.txt");
-    if (!file.is_open()) {
-        cout << "file_open_error!" << endl;
-        return 0;
-    }
-
-    Array image(800, 800, 800);
-
-    char pixel;
-    int temp = 0;
-    while (file >> pixel) {
-        if (pixel != '\n') {
-            image.array[temp++] = (int)pixel - 48;
-        }
-    }
-    file.close();
-
-
-    vector<Line> lines;
-    int linesMax = INT_MAX;
-
-    auto start = std::chrono::high_resolution_clock::now();
-    HoughLinesProbabilistic(image, 1, pai / 180, 60, 30, 10, lines, linesMax);
-    auto end = std::chrono::high_resolution_clock::now();
-    // 计算时间差
-    chrono::duration<double> duration = end - start;
-    cout << "total time: " << duration.count() * 1000 << "ms" << endl;
-
-
-    cout << "linesMax: " << lines.size() << endl;
-    cout << "All the lines detected are below (x1,y1,x2,y2):\n";
-    //cout << "All the lines detected are below (rho+angle):\n";
-    for (auto iter = lines.begin(); iter != lines.end(); iter++)
-    {
-        cout << iter->p1.x << " " << iter->p1.y << " " << iter->p2.x << " " << iter->p2.y << endl;
-    }
-
-
-    return 0;
 }
